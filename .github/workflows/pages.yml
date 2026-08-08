@@ -1,0 +1,75 @@
+name: Deploy sealed Option B test to Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify sealed ZIP parts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "dcfc3463bac96efb5bc8ced169e8da1774448f0d59604820763841135c508657  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip" | sha256sum -c -
+          echo "33219b75522b9588912fae583bfb7f2247d882428a949616c0bfb74597e28f8a  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip" | sha256sum -c -
+          echo "cd4ff74fab3b747a39308999123f2aaa8e8a164ad3eb0a3338a836c804aae90d  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip" | sha256sum -c -
+
+      - name: Assemble sealed site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf _site
+          mkdir -p _site
+
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip -d _site
+
+          test -f _site/index.html
+
+          FILE_COUNT="$(find _site -type f | wc -l | tr -d ' ')"
+          echo "Site files: ${FILE_COUNT}"
+          test "${FILE_COUNT}" = "178"
+
+          IMAGE_COUNT="$(find _site/assets/images/inventory -type f | wc -l | tr -d ' ')"
+          echo "Inventory images: ${IMAGE_COUNT}"
+          test "${IMAGE_COUNT}" = "154"
+
+          echo "SEALED OPTION-B SITE ASSEMBLY: PASS"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
