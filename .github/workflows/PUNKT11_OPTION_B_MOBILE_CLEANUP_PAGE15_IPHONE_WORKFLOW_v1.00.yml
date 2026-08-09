@@ -1,0 +1,127 @@
+name: Point 11 Option B PAGE_SIZE 15 mobile cleanup iPhone check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-mobile-cleanup-15"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private test repository
+        uses: actions/checkout@v4
+
+      - name: Assemble sealed baseline and create mobile cleanup PAGE_SIZE 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dcfc3463bac96efb5bc8ced169e8da1774448f0d59604820763841135c508657  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip" | sha256sum -c -
+          echo "33219b75522b9588912fae583bfb7f2247d882428a949616c0bfb74597e28f8a  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip" | sha256sum -c -
+          echo "cd4ff74fab3b747a39308999123f2aaa8e8a164ad3eb0a3338a836c804aae90d  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip" | sha256sum -c -
+          rm -rf _site
+          mkdir -p _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip -d _site
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+
+          root=Path('_site')
+          def tree(root):
+              h=hashlib.sha256(); files=sorted(p for p in root.rglob('*') if p.is_file())
+              for p in files:
+                  rel=p.relative_to(root).as_posix(); d=p.read_bytes(); dig=hashlib.sha256(d).hexdigest()
+                  h.update(rel.encode()); h.update(b'\0'); h.update(dig.encode()); h.update(b'\0'); h.update(str(len(d)).encode()); h.update(b'\n')
+              return h.hexdigest(),len(files)
+          def regen():
+              ip=root/'integrity.json'; old=json.loads(ip.read_text(encoding='utf-8')); files=[]
+              for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name!='integrity.json'):
+                  d=p.read_bytes(); files.append({'bytes':len(d),'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(d).hexdigest()})
+              ip.write_text(json.dumps({'appVersion':old['appVersion'],'files':files,'schemaVersion':old.get('schemaVersion',1)},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+              return files
+
+          assert tree(root)==('96869e90ec87d79a389c91a71d150d6276bbe0675601c27d1703f7e2f6026980',178)
+          inventory=root/'inventory-view.js'; s=inventory.read_text(encoding='utf-8')
+          assert s.count('const PAGE_SIZE = 20;')==1
+          inventory.write_text(s.replace('const PAGE_SIZE = 20;','const PAGE_SIZE = 15;'),encoding='utf-8')
+          regen()
+          assert tree(root)==('0eefb7de4c03ce24d35280509184d67bbb936aa0dab32545e9cb4e780718df76',178)
+
+          s=inventory.read_text(encoding='utf-8')
+          needle='''  function populateDialog(dialog, product) {\n    const content = dialog.querySelector("#product-dialog-content");\n    content.replaceChildren();\n    const layout = element("div", "product-detail");\n    layout.append(createGallery(product));\n\n    const copy = element("div", "product-detail__copy");'''
+          repl='''  function usesTextOnlyMobileDetails() {\n    if (typeof window.matchMedia !== "function") return false;\n    return window.matchMedia("(max-width: 860px)").matches ||\n      window.matchMedia("(hover: none) and (pointer: coarse)").matches;\n  }\n\n  function populateDialog(dialog, product) {\n    const content = dialog.querySelector("#product-dialog-content");\n    content.replaceChildren();\n    const layout = element("div", "product-detail");\n    if (usesTextOnlyMobileDetails()) {\n      layout.classList.add("product-detail--text-only");\n    } else {\n      layout.append(createGallery(product));\n    }\n\n    const copy = element("div", "product-detail__copy");'''
+          assert s.count(needle)==1
+          inventory.write_text(s.replace(needle,repl),encoding='utf-8')
+
+          idx=root/'index.html'; s=idx.read_text(encoding='utf-8')
+          old='Alle freigegebenen Produkte aus Master v7.66 – mit stabiler Bildzuordnung, präziser Suche und ausschließlich masterbasierten Filtern.'
+          new='Alle freigegebenen Produkte aus Master v7.66 – <span class="desktop-image-context">mit stabiler Bildzuordnung, präziser Suche und ausschließlich masterbasierten Filtern.</span><span class="mobile-inventory-context">präzise durchsuchbar und klar nach Herkunft, Kategorie, Nutzung und Geschmack filterbar.</span>'
+          assert s.count(old)==1; s=s.replace(old,new)
+          old='<span class="inventory-stat"><strong>154</strong><span>Bilder</span></span>'
+          new='<span class="inventory-stat inventory-stat--images"><strong>154</strong><span>Bilder</span></span>'
+          assert s.count(old)==1; idx.write_text(s.replace(old,new),encoding='utf-8')
+
+          app=root/'app.js'; s=app.read_text(encoding='utf-8')
+          anchor='''function setNetworkStatus() {\n  if (!ui.networkStatus) return;\n  ui.networkStatus.textContent = navigator.onLine ? "Online" : "Offline";\n  ui.networkStatus.dataset.tone = navigator.onLine ? "success" : "warning";\n}\n\n'''
+          helper='''function setNetworkStatus() {\n  if (!ui.networkStatus) return;\n  ui.networkStatus.textContent = navigator.onLine ? "Online" : "Offline";\n  ui.networkStatus.dataset.tone = navigator.onLine ? "success" : "warning";\n}\n\nfunction usesMobilePresentation() {\n  if (typeof window.matchMedia !== "function") return false;\n  return window.matchMedia("(max-width: 860px)").matches ||\n    window.matchMedia("(hover: none) and (pointer: coarse)").matches;\n}\n\n'''
+          assert s.count(anchor)==1; s=s.replace(anchor,helper)
+          old='ui.footerStatus.textContent = `${version.masterVersion} · ${inventory.items.length} Produkte · ${assets.items.length} Bilder`;'
+          new='ui.footerStatus.textContent = usesMobilePresentation() ? `${version.masterVersion} · ${inventory.items.length} Produkte` : `${version.masterVersion} · ${inventory.items.length} Produkte · ${assets.items.length} Bilder`;'
+          assert s.count(old)==1; app.write_text(s.replace(old,new),encoding='utf-8')
+
+          css=root/'styles.css'; s=css.read_text(encoding='utf-8')
+          anchor='.inventory-intro__copy { max-width: 66ch; margin-bottom: 0; font-size: clamp(1.02rem, 1.5vw, 1.18rem); }\n'
+          assert s.count(anchor)==1; s=s.replace(anchor,anchor+'.mobile-inventory-context { display: none; }\n')
+          anchor='.product-detail { display: grid; grid-template-columns: minmax(16rem, 0.82fr) minmax(0, 1.18fr); gap: clamp(var(--space-6), 4vw, var(--space-10)); }\n'
+          assert s.count(anchor)==1; s=s.replace(anchor,anchor+'.product-detail--text-only { grid-template-columns: minmax(0, 1fr); }\n')
+          old='''.visual-mobile .inventory-intro__status { width: 100%; }\n.visual-mobile .inventory-stat { flex: 1; min-width: 0; }'''
+          new='''.visual-mobile .inventory-intro__status { width: auto; }\n.visual-mobile .inventory-stat { flex: 0 0 auto; min-width: 8rem; }\n.visual-mobile .inventory-stat--images, .visual-mobile .desktop-image-context { display: none; }\n.visual-mobile .mobile-inventory-context { display: inline; }'''
+          assert s.count(old)==1; s=s.replace(old,new)
+          old='''  .content { padding-bottom: 7rem; }\n  .inventory-workspace { grid-template-columns: 1fr; }'''
+          new='''  .content { padding-bottom: 7rem; }\n  .inventory-intro__status { width: auto; }\n  .inventory-stat { flex: 0 0 auto; min-width: 8rem; }\n  .inventory-stat--images, .desktop-image-context { display: none; }\n  .mobile-inventory-context { display: inline; }\n  .inventory-workspace { grid-template-columns: 1fr; }'''
+          assert s.count(old)==1; s=s.replace(old,new)
+          old='''  .inventory-intro__status { width: 100%; }\n  .inventory-stat { flex: 1; min-width: 0; }'''
+          new='''  .inventory-intro__status { width: auto; }\n  .inventory-stat { flex: 0 0 auto; min-width: 8rem; }'''
+          assert s.count(old)==1; s=s.replace(old,new)
+          marker='@media (prefers-reduced-motion: reduce) {'
+          touch='''@media (hover: none) and (pointer: coarse) {\n  .inventory-intro__status { width: auto; }\n  .inventory-stat { flex: 0 0 auto; min-width: 8rem; }\n  .inventory-stat--images, .desktop-image-context { display: none; }\n  .mobile-inventory-context { display: inline; }\n}\n\n'''
+          assert s.count(marker)==1; css.write_text(s.replace(marker,touch+marker),encoding='utf-8')
+
+          files=regen()
+          final_tree,count=tree(root)
+          print('MOBILE CLEANUP PAGE15 TREE',final_tree)
+          assert final_tree=='25d3c0b71bd0a9b596646874d1ba369a7ca1955e20690edf8c71eb9017176eae'
+          assert count==178 and len(files)==177
+          assert len(list((root/'assets/images/inventory').glob('*')))==154
+          assert 'const PAGE_SIZE = 15;' in inventory.read_text(encoding='utf-8')
+          assert 'usesTextOnlyMobileDetails()' in inventory.read_text(encoding='utf-8')
+          print('MOBILE CLEANUP SOURCE LOCK: PASS')
+          PY
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload mobile cleanup PAGE_SIZE 15
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy mobile cleanup PAGE_SIZE 15
+        id: deployment
+        uses: actions/deploy-pages@v4
