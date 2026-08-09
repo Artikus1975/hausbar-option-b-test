@@ -1,0 +1,158 @@
+name: Point 11 Option B read-only performance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout test repository
+        uses: actions/checkout@v5
+
+      - name: Verify sealed site parts and assemble read-only site
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "dcfc3463bac96efb5bc8ced169e8da1774448f0d59604820763841135c508657  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip" | sha256sum -c -
+          echo "33219b75522b9588912fae583bfb7f2247d882428a949616c0bfb74597e28f8a  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip" | sha256sum -c -
+          echo "cd4ff74fab3b747a39308999123f2aaa8e8a164ad3eb0a3338a836c804aae90d  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip" | sha256sum -c -
+          echo "822c7cd040f49ec672f77b985927bfdd810b7c691d6312bb4f601516d476b1ec  PUNKT11_OPTION_B_PERFORMANCE_RUNNER_v1.00.py" | sha256sum -c -
+
+          rm -rf _site performance-results
+          mkdir -p _site performance-results
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip -d _site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip -d _site
+
+          test "$(find _site -type f | wc -l | tr -d ' ')" = "178"
+          test "$(find _site/assets/images/inventory -type f | wc -l | tr -d ' ')" = "154"
+          test -f _site/index.html
+          echo "SEALED OPTION-B SITE ASSEMBLY: PASS"
+
+      - name: Verify runner browser tools
+        id: tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          CHROMEDRIVER_BIN="$(command -v chromedriver || true)"
+          if [ -z "$CHROMEDRIVER_BIN" ] && [ -n "${CHROMEWEBDRIVER:-}" ]; then
+            CHROMEDRIVER_BIN="$(find "$CHROMEWEBDRIVER" -maxdepth 2 -type f -name chromedriver | head -n 1)"
+          fi
+          test -x "$CHROME_BIN"
+          test -x "$CHROMEDRIVER_BIN"
+          echo "chrome_bin=$CHROME_BIN" >> "$GITHUB_OUTPUT"
+          echo "chromedriver_bin=$CHROMEDRIVER_BIN" >> "$GITHUB_OUTPUT"
+          "$CHROME_BIN" --version
+          "$CHROMEDRIVER_BIN" --version
+          python3 --version
+
+      - name: Start local server and ChromeDriver
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup python3 -m http.server 4173 --bind 127.0.0.1 --directory _site > /tmp/p11-http-server.log 2>&1 &
+          echo $! > /tmp/p11-http-server.pid
+          nohup "${{ steps.tools.outputs.chromedriver_bin }}" --port=9515 --verbose --log-path=/tmp/p11-chromedriver.log > /dev/null 2>&1 &
+          echo $! > /tmp/p11-chromedriver.pid
+
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4173/ >/dev/null && curl -fsS http://127.0.0.1:9515/status >/dev/null; then
+              echo "LOCAL TEST RUNTIME: READY"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "Local test runtime failed to become ready" >&2
+          cat /tmp/p11-http-server.log || true
+          cat /tmp/p11-chromedriver.log || true
+          exit 1
+
+      - name: Execute five-run Option B measurement
+        id: measure
+        shell: bash
+        env:
+          CHROME_BIN: ${{ steps.tools.outputs.chrome_bin }}
+        run: |
+          set +e
+          python3 PUNKT11_OPTION_B_PERFORMANCE_RUNNER_v1.00.py \
+            --site _site \
+            --base-url 'http://127.0.0.1:4173/#inventory' \
+            --webdriver 'http://127.0.0.1:9515' \
+            --chrome-binary "$CHROME_BIN" \
+            --output performance-results
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "PERF_EXIT_CODE=$CODE" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Stop local runtime
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -f /tmp/p11-chromedriver.pid ]; then kill "$(cat /tmp/p11-chromedriver.pid)" 2>/dev/null || true; fi
+          if [ -f /tmp/p11-http-server.pid ]; then kill "$(cat /tmp/p11-http-server.pid)" 2>/dev/null || true; fi
+          sleep 0.5
+
+      - name: Prove sealed site remained unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root=Path('_site')
+          h=hashlib.sha256()
+          files=sorted(p for p in root.rglob('*') if p.is_file())
+          for p in files:
+              rel=p.relative_to(root).as_posix()
+              b=p.read_bytes()
+              d=hashlib.sha256(b).hexdigest()
+              h.update(rel.encode()); h.update(b'\0'); h.update(d.encode()); h.update(b'\0'); h.update(str(len(b)).encode()); h.update(b'\n')
+          actual=h.hexdigest()
+          expected='96869e90ec87d79a389c91a71d150d6276bbe0675601c27d1703f7e2f6026980'
+          print('site_tree_after=',actual)
+          print('files_after=',len(files))
+          if actual != expected or len(files) != 178:
+              raise SystemExit('SOURCE LOCK FAIL AFTER MEASUREMENT')
+          print('SOURCE LOCK AFTER MEASUREMENT: PASS')
+          PY
+
+      - name: Upload raw performance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: PUNKT11_OPTION_B_PERFORMANCE_RAW_v1.00
+          path: performance-results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce performance verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE="${PERF_EXIT_CODE:-99}"
+          if [ -f performance-results/02_summary.json ]; then
+            echo "----- OPTION B PERFORMANCE SUMMARY -----"
+            cat performance-results/02_summary.json
+          fi
+          if [ "$CODE" = "0" ]; then
+            echo "OPTION B PERFORMANCE GATE: PASS"
+            exit 0
+          fi
+          if [ "$CODE" = "3" ]; then
+            echo "OPTION B PERFORMANCE GATE: FAIL (real measured budget exceedance)" >&2
+            exit 3
+          fi
+          echo "OPTION B PERFORMANCE MEASUREMENT: TECHNICAL FAILURE, no verdict" >&2
+          exit "$CODE"
