@@ -1,0 +1,137 @@
+name: Point 11 Option B focused mobile page-size comparison v1.04
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-mobile-page-size-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout private test repository
+        uses: actions/checkout@v5
+
+      - name: Verify sealed baseline and focused mobile runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dcfc3463bac96efb5bc8ced169e8da1774448f0d59604820763841135c508657  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip" | sha256sum -c -
+          echo "33219b75522b9588912fae583bfb7f2247d882428a949616c0bfb74597e28f8a  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip" | sha256sum -c -
+          echo "cd4ff74fab3b747a39308999123f2aaa8e8a164ad3eb0a3338a836c804aae90d  PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip" | sha256sum -c -
+          echo "457dd0c3c09f17dcb1b985626d21bae4f93092f02d0b43780f6b21330e36ea6e  PUNKT11_OPTION_B_SEITENGROESSEN_MOBILE_FOCUSED_RUNNER_v1.04.py" | sha256sum -c -
+
+          rm -rf _mobile_focused_work mobile-focused-results
+          mkdir -p _mobile_focused_work/base_site mobile-focused-results
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART1_OF_3.zip -d _mobile_focused_work/base_site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART2_OF_3.zip -d _mobile_focused_work/base_site
+          unzip -q PUNKT11_OPTION_B_SITE_ONLY_v1.00_PART3_OF_3.zip -d _mobile_focused_work/base_site
+          test "$(find _mobile_focused_work/base_site -type f | wc -l | tr -d ' ')" = "178"
+          test "$(find _mobile_focused_work/base_site/assets/images/inventory -type f | wc -l | tr -d ' ')" = "154"
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root=Path('_mobile_focused_work/base_site')
+          h=hashlib.sha256(); files=sorted(p for p in root.rglob('*') if p.is_file())
+          for p in files:
+              rel=p.relative_to(root).as_posix(); b=p.read_bytes(); d=hashlib.sha256(b).hexdigest()
+              h.update(rel.encode()); h.update(b'\0'); h.update(d.encode()); h.update(b'\0'); h.update(str(len(b)).encode()); h.update(b'\n')
+          actual=h.hexdigest(); expected='96869e90ec87d79a389c91a71d150d6276bbe0675601c27d1703f7e2f6026980'
+          print('baseline_site_tree=',actual)
+          if actual != expected or len(files) != 178: raise SystemExit('BASELINE SOURCE LOCK FAIL')
+          print('BASELINE SOURCE LOCK: PASS')
+          PY
+
+      - name: Install Playwright Chromium and WebKit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "playwright==1.57.0"
+          python3 -m playwright install --with-deps chromium webkit
+
+      - name: Start local sealed-site server
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup python3 -m http.server 4173 --bind 127.0.0.1 --directory _mobile_focused_work > /tmp/p11-mobile-focused-http.log 2>&1 &
+          echo $! > /tmp/p11-mobile-focused-http.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4173/base_site/ >/dev/null; then
+              echo "LOCAL MOBILE RUNTIME: READY"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/p11-mobile-focused-http.log || true
+          exit 1
+
+      - name: Execute focused Samsung and iPhone comparison
+        id: compare
+        shell: bash
+        run: |
+          set +e
+          python3 PUNKT11_OPTION_B_SEITENGROESSEN_MOBILE_FOCUSED_RUNNER_v1.04.py             --base-site _mobile_focused_work/base_site             --variants-root _mobile_focused_work/variants             --base-url-root 'http://127.0.0.1:4173/variants'             --output mobile-focused-results
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "COMPARE_EXIT_CODE=$CODE" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Stop local server
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -f /tmp/p11-mobile-focused-http.pid ]; then kill "$(cat /tmp/p11-mobile-focused-http.pid)" 2>/dev/null || true; fi
+          sleep 0.5
+
+      - name: Prove sealed baseline remained unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root=Path('_mobile_focused_work/base_site')
+          h=hashlib.sha256(); files=sorted(p for p in root.rglob('*') if p.is_file())
+          for p in files:
+              rel=p.relative_to(root).as_posix(); b=p.read_bytes(); d=hashlib.sha256(b).hexdigest()
+              h.update(rel.encode()); h.update(b'\0'); h.update(d.encode()); h.update(b'\0'); h.update(str(len(b)).encode()); h.update(b'\n')
+          actual=h.hexdigest(); expected='96869e90ec87d79a389c91a71d150d6276bbe0675601c27d1703f7e2f6026980'
+          print('baseline_site_tree_after=',actual)
+          if actual != expected or len(files) != 178: raise SystemExit('BASELINE SOURCE LOCK FAIL AFTER COMPARISON')
+          print('BASELINE SOURCE LOCK AFTER COMPARISON: PASS')
+          PY
+
+      - name: Upload raw focused mobile comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: PUNKT11_OPTION_B_SEITENGROESSEN_MOBILE_FOCUSED_RAW_v1.04
+          path: mobile-focused-results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce automated hard gates only
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE="${COMPARE_EXIT_CODE:-99}"
+          if [ -f mobile-focused-results/03_mobile_comparison_summary.json ]; then
+            cat mobile-focused-results/03_mobile_comparison_summary.json
+          fi
+          if [ "$CODE" = "0" ]; then
+            echo "FOCUSED MOBILE PAGE SIZE AUTOMATED HARD GATES: PASS; NO PRODUCT DECISION; REAL IPHONE FINALIST CHECK STILL REQUIRED"
+            exit 0
+          fi
+          if [ "$CODE" = "3" ]; then
+            echo "FOCUSED MOBILE PAGE SIZE COMPARISON: AT LEAST ONE REAL HARD-GATE FAILURE" >&2
+            exit 3
+          fi
+          echo "FOCUSED MOBILE PAGE SIZE COMPARISON: TECHNICAL FAILURE, NO PRODUCT DECISION" >&2
+          exit "$CODE"
